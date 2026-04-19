@@ -1225,7 +1225,60 @@ local function findAdorneeGlobal(animalData)
 end
 
 -- =========================================================
--- 🦾 CORE ENGINE (FIXED ANTI-RESET)
+-- 🛠️ FONCTIONS DÉPENDANTES DU MODE SIDE (SCRULI HUB)
+-- =========================================================
+local function findClaimModel(podium)
+    if not podium or not podium.Parent then return nil end
+    local claim = podium:FindFirstChild("Claim")
+    if claim and claim:IsA("Model") then
+        if claim.PrimaryPart then return claim.PrimaryPart end
+        for _, c in ipairs(claim:GetChildren()) do
+            if c:IsA("BasePart") then return c end
+        end
+    end
+    return nil
+end
+
+local function getTargetPodiumAndSafePosition(animalData, fallbackPos)
+    if not animalData or not animalData.plot then return nil, fallbackPos end
+    local plots = Workspace:FindFirstChild("Plots")
+    local plot = plots and plots:FindFirstChild(animalData.plot)
+    local podiums = plot and plot:FindFirstChild("AnimalPodiums")
+    if not podiums then return nil, fallbackPos end
+    local safeName = (fallbackPos and fallbackPos.Y > 8.8) and "13" or "3"
+    local safePod = podiums:FindFirstChild(safeName)
+    local safeBase = safePod and safePod:FindFirstChild("Base")
+    local safeSpawn = safeBase and safeBase:FindFirstChild("Spawn")
+    return safePod, (safeSpawn and safeSpawn:IsA("BasePart") and safeSpawn.Position) or fallbackPos
+end
+
+local function playFullScreenFlash()
+    local flashGui = Instance.new("ScreenGui")
+    flashGui.Name = "AutoTPFlash"
+    flashGui.ResetOnSpawn = false
+    flashGui.DisplayOrder = 999999
+    flashGui.IgnoreGuiInset = true
+    pcall(function() flashGui.Parent = game:GetService("CoreGui") end)
+    if not flashGui.Parent then flashGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+    
+    local flashFrame = Instance.new("Frame", flashGui)
+    flashFrame.Size = UDim2.new(1, 0, 1, 0)
+    flashFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+    flashFrame.BackgroundTransparency = 1
+    flashFrame.BorderSizePixel = 0
+    
+    local tweenIn = game:GetService("TweenService"):Create(flashFrame, TweenInfo.new(0.075, Enum.EasingStyle.Linear), {BackgroundTransparency = 0})
+    local tweenOut = game:GetService("TweenService"):Create(flashFrame, TweenInfo.new(0.125, Enum.EasingStyle.Linear), {BackgroundTransparency = 1})
+    
+    tweenIn:Play()
+    tweenIn.Completed:Connect(function()
+        tweenOut:Play()
+        tweenOut.Completed:Connect(function() flashGui:Destroy() end)
+    end)
+end
+
+-- =========================================================
+-- 🦾 MOTEUR DUAL TP (FRONT & SIDE) - FIXÉ & SANS SPEED SYNC
 -- =========================================================
 runAutoSnipe = function()
     if State.isTpMoving then return end
@@ -1248,93 +1301,172 @@ runAutoSnipe = function()
         local carpetName = Config.TpSettings.Tool
         local carpet = LocalPlayer.Backpack:FindFirstChild(carpetName) or char:FindFirstChild(carpetName)
         
-        if carpet then hum:EquipTool(carpet) end
-        
-        -- 🛡️ FIX 1 : On force l'état de saut avant de monter pour "tromper" l'anti-triche
-        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        task.wait(0.05)
-        
-        local isSecondFloor = exactPos.Y > 10
-        local plotIdx = getClosestBaseIdx(exactPos)
-        local targetBasePos = isSecondFloor and BASES_HIGH[plotIdx] or BASES_LOW[plotIdx]
-        
-        -- 🛡️ FIX 2 : Réduction de la vélocité (120 au lieu de 200) pour éviter le reset immédiat
-        local jumpStart = tick()
-        while hrp.Position.Y < math.max(targetBasePos.Y, 50) and (tick() - jumpStart) < 3 do
-            hrp.AssemblyLinearVelocity = Vector3.new(0, 120, 0) -- Vélocité stable
-            RunService.Heartbeat:Wait()
-        end
+        if _G.TP_Mode == "Front" then
+            -- ==========================================
+            -- 🔴 MODE FRONT : BULLY FIXÉ (Avec Anchor)
+            -- ==========================================
+            if carpet then hum:EquipTool(carpet) end
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.05)
+            
+            local isSecondFloor = exactPos.Y > 10
+            local plotIdx = getClosestBaseIdx(exactPos)
+            local targetBasePos = isSecondFloor and BASES_HIGH[plotIdx] or BASES_LOW[plotIdx]
+            
+            local jumpStart = tick()
+            while hrp.Position.Y < math.max(targetBasePos.Y, 50) and (tick() - jumpStart) < 3 do
+                hrp.AssemblyLinearVelocity = Vector3.new(0, 120, 0)
+                RunService.Heartbeat:Wait()
+            end
 
-        -- 🛡️ FIX 3 : On fige le perso (Anchored) pendant les micro-TP pour empêcher le serveur de calculer la vitesse
-        hrp.Anchored = true
-        for i = 1, 15 do -- Augmenté à 15 pour plus de stabilité
-            if (hrp.Position - targetBasePos).Magnitude > 1 then
-                hrp.CFrame = CFrame.new(targetBasePos)
+            hrp.Anchored = true
+            for i = 1, 15 do
+                if (hrp.Position - targetBasePos).Magnitude > 1 then
+                    hrp.CFrame = CFrame.new(targetBasePos)
+                    task.wait(0.05) -- Valeur fixe safe
+                end
+            end
+            hrp.Anchored = false
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+
+            if not isSecondFloor then
+                local bestSpot, minDst = CLONE_POSITIONS_FLOOR[1], math.huge
+                for _, v in ipairs(CLONE_POSITIONS_FLOOR) do
+                    local d = (targetPart.Position - v).Magnitude
+                    if d < minDst then
+                        minDst = d
+                        bestSpot = v
+                    end
+                end
+                
+                hrp.Anchored = true
+                for i = 1, 6 do
+                    if (hrp.Position - bestSpot).Magnitude > 3 then
+                        hrp.CFrame = CFrame.new(bestSpot)
+                        task.wait(0.05) -- Valeur fixe safe
+                    end
+                end
+                hrp.Anchored = false
+            end
+
+            local bestFace, minFace = FACE_TARGETS[1], math.huge
+            for _, v in ipairs(FACE_TARGETS) do
+                local d = (hrp.Position - v).Magnitude
+                if d < minFace then
+                    minFace = d
+                    bestFace = v
+                end
+            end
+            task.wait(0.1)
+            hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(bestFace.X, hrp.Position.Y, bestFace.Z))
+            
+            if isSecondFloor or not _G._isTargetPlotUnlocked(targetPetData.plot) then 
+                walkForward(0.4)
+                task.wait(0.4)
+                if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then MiscState.desyncEnabled = _G.toggleDesyncFunc(true) end
+                instantClone()
+                while _G.isCloning do task.wait() end 
+                task.wait(0.2)
+                
+                char = LocalPlayer.Character
+                hrp = char and char:FindFirstChild("HumanoidRootPart")
+                hum = char and char:FindFirstChild("Humanoid")
+                if not hrp or not hum then return end
+                carpet = LocalPlayer.Backpack:FindFirstChild(carpetName) or char:FindFirstChild(carpetName)
+            else
+                if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then MiscState.desyncEnabled = _G.toggleDesyncFunc(true) end
+            end
+            
+        elseif _G.TP_Mode == "Side" then
+            -- ==========================================
+            -- 🔵 MODE SIDE : SCRULI HUB (SANS ANCHOR POUR ÉVITER LE RUBBERBAND)
+            -- ==========================================
+            playFullScreenFlash()
+
+            local targetPodium, targetPosition = getTargetPodiumAndSafePosition(targetPetData, exactPos)
+            local isSecondFloor = targetPosition.Y > 10
+            local claimPart = findClaimModel(targetPodium)
+            local directionToPet = targetPosition - hrp.Position
+            
+            if directionToPet.Magnitude > 0 then
+                directionToPet = Vector3.new(directionToPet.X, 0, directionToPet.Z).Unit
+            else
+                directionToPet = Vector3.new(0, 0, -1)
+            end
+
+            local dirBehind
+            if claimPart then
+                local df = claimPart.Position - targetPosition
+                if df.Magnitude > 0 then dirBehind = -Vector3.new(df.X, 0, df.Z).Unit else dirBehind = -directionToPet end
+            else
+                dirBehind = -directionToPet
+            end
+
+            local behindPos = targetPosition + (dirBehind * 7)
+            local rpPre = RaycastParams.new()
+            rpPre.FilterDescendantsInstances = {char}
+            rpPre.FilterType = Enum.RaycastFilterType.Exclude
+
+            local resPre = Workspace:Raycast(Vector3.new(behindPos.X, targetPosition.Y + 10, behindPos.Z), Vector3.new(0, -1000, 0), rpPre)
+            if not resPre then return end
+
+            local finalHeight = resPre.Position.Y + 5.5
+            local finalPos = Vector3.new(behindPos.X, finalHeight, behindPos.Z)
+            local lookTarget = claimPart and Vector3.new(claimPart.Position.X, finalPos.Y, claimPart.Position.Z) or targetPosition
+            local finalFacing = CFrame.lookAt(finalPos, lookTarget)
+            local facingRot = finalFacing - finalFacing.Position
+
+            if hrp.Position.Y > 25 and targetPosition.Y > 25 then
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.CFrame = CFrame.new(finalPos) * facingRot
+            else
+                if carpet and hum and hum.Parent then
+                    hum:EquipTool(carpet)
+                    task.wait(0.01)
+                end
+                if not char.Parent or not hrp.Parent then return end
+                
+                -- LE JUMP EXACT DE SCRULI 
+                hrp.CFrame = CFrame.new(hrp.Position) * facingRot
+                local v = hrp.AssemblyLinearVelocity
+                hrp.AssemblyLinearVelocity = Vector3.new(v.X, 200, v.Z)
+                task.wait(0.08) -- Timing précis du tapis
+                
+                if not char.Parent or not hrp.Parent then return end
+                
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.CFrame = CFrame.new(finalPos) * facingRot
                 task.wait(0.05)
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.CFrame = CFrame.new(finalPos) * facingRot
             end
-        end
-        hrp.Anchored = false
-        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
 
-      
-
-        if not isSecondFloor then
-            local bestSpot, minDst = CLONE_POSITIONS_FLOOR[1], math.huge
-            for _, v in ipairs(CLONE_POSITIONS_FLOOR) do
-                local d = (targetPart.Position - v).Magnitude
-                if d < minDst then
-                    minDst = d
-                    bestSpot = v
-                end
-            end
-            for i = 1, 6 do
-                if (hrp.Position - bestSpot).Magnitude > 3 then
-                    hrp.CFrame = CFrame.new(bestSpot)
-                    task.wait(0.05)
-                end
+            if isSecondFloor or not _G._isTargetPlotUnlocked(targetPetData.plot) then
+                walkForward(0.4)
+                task.wait(0.4)
+                if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then MiscState.desyncEnabled = _G.toggleDesyncFunc(true) end
+                instantClone()
+                while _G.isCloning do task.wait() end 
+                task.wait(0.2)
+                
+                char = LocalPlayer.Character
+                hrp = char and char:FindFirstChild("HumanoidRootPart")
+                hum = char and char:FindFirstChild("Humanoid")
+                if not hrp or not hum then return end
+                carpet = LocalPlayer.Backpack:FindFirstChild(carpetName) or char:FindFirstChild(carpetName)
+            else
+                if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then MiscState.desyncEnabled = _G.toggleDesyncFunc(true) end
             end
         end
 
-        local bestFace, minFace = FACE_TARGETS[1], math.huge
-        for _, v in ipairs(FACE_TARGETS) do
-            local d = (hrp.Position - v).Magnitude
-            if d < minFace then
-                minFace = d
-                bestFace = v
-            end
-        end
-        task.wait(0.1)
-        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(bestFace.X, hrp.Position.Y, bestFace.Z))
-        
-if isSecondFloor or not _G._isTargetPlotUnlocked(targetPetData.plot) then 
-            walkForward(0.4)
-            task.wait(0.4)
-            
-            -- 🛡️ ON ACTIVE LE DESYNC JUSTE AVANT LE CLONE (ET IL RESTE ALLUMÉ)
-            if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then
-                MiscState.desyncEnabled = _G.toggleDesyncFunc(true)
-            end
-            
-            instantClone()
-            
-            while _G.isCloning do task.wait() end 
-            task.wait(0.2)
-            
-            char = LocalPlayer.Character
-            hrp = char and char:FindFirstChild("HumanoidRootPart")
-            hum = char and char:FindFirstChild("Humanoid")
-        
-            if not hrp or not hum then return end
-            carpet = LocalPlayer.Backpack:FindFirstChild(carpetName) or char:FindFirstChild(carpetName)
-        else
-            -- 🛡️ Si on n'a pas besoin de cloner (Ex: 1er étage), on active le Desync quand même ici
-            if Config.AutoDesyncOnClone and _G.toggleDesyncFunc then
-                MiscState.desyncEnabled = _G.toggleDesyncFunc(true)
-            end
-        end
-        
+        -- ================================================================
+        -- 🧠 ALIGNEMENT SUR LE BRAINROT
+        -- ================================================================
         task.wait(0.15)
         if carpet then hum:EquipTool(carpet) end
+        
+        -- On utilise l'Anchor QUE sur le mode Front. Le Side force juste la vélocité à zéro.
+        local shouldAnchor = (_G.TP_Mode == "Front")
         
         local verticalDiff = targetPart.Position.Y - hrp.Position.Y
         if verticalDiff > 2 then
@@ -1345,24 +1477,32 @@ if isSecondFloor or not _G._isTargetPlotUnlocked(targetPetData.plot) then
             plat.Anchored = true
             plat.Transparency = 0.3
             
+            if shouldAnchor then hrp.Anchored = true end
             for i = 1, 10 do 
                 if not LocalPlayer:GetAttribute("Stealing") then 
-                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    hrp.AssemblyLinearVelocity = Vector3.zero
                     hrp.CFrame = CFrame.new(airPos)
                     task.wait(0.05) 
                 end 
             end
+            if shouldAnchor then hrp.Anchored = false end
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            
             task.delay(10, function() plat:Destroy() end)
         else
+            if shouldAnchor then hrp.Anchored = true end
             for i = 1, 10 do 
                 if LocalPlayer:GetAttribute("Stealing") then break end
-                hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                hrp.AssemblyLinearVelocity = Vector3.zero
                 if (hrp.Position - targetPart.Position).Magnitude > 3 then
                     hrp.CFrame = CFrame.new(targetPart.Position)
                     task.wait(0.05)
                 end 
             end
+            if shouldAnchor then hrp.Anchored = false end
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         end
+        
     end)
     
     State.isTpMoving = false
@@ -2764,7 +2904,7 @@ local titleLbl = Instance.new("TextLabel", hudFrame)
 titleLbl.Size = UDim2.new(0, 200, 1, 0)
 titleLbl.Position = UDim2.new(0, 65, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "SCRULI HUB V3.3"
+titleLbl.Text = "SCRULI HUB V3.5"
 titleLbl.Font = Enum.Font.GothamBlack
 titleLbl.TextSize = 16
 titleLbl.TextColor3 = Theme.White
@@ -3244,6 +3384,39 @@ for _, toolName in ipairs(toolOptions) do
     toolSwitches[toolName] = tog
 end
 
+-- =========================================================
+-- 🎛️ LES BOUTONS FRONT/SIDE DANS LE MENU "AUTO TP" (AVEC SAUVEGARDE FIXÉE)
+-- =========================================================
+CreateSectionHeader(pAuto, "TP MODE (FRONT / SIDE)")
+
+-- 1. On charge la sauvegarde (ou on met Front par défaut)
+if not Config.TpSettings.Mode then Config.TpSettings.Mode = "Front" end
+_G.TP_Mode = Config.TpSettings.Mode 
+
+local frontTog, sideTog
+
+frontTog = CreateiOSToggle(pAuto, "Mode: FRONT", _G.TP_Mode == "Front", function(val)
+    if val then
+        _G.TP_Mode = "Front"
+        Config.TpSettings.Mode = "Front"
+        if SaveConfig then SaveConfig() end -- 💾 SAUVEGARDE ICI
+        if sideTog then sideTog.Update(false, true) end
+    elseif _G.TP_Mode == "Front" then
+        frontTog.Update(true, true) 
+    end
+end)
+
+sideTog = CreateiOSToggle(pAuto, "Mode: SIDE", _G.TP_Mode == "Side", function(val)
+    if val then
+        _G.TP_Mode = "Side"
+        Config.TpSettings.Mode = "Side"
+        if SaveConfig then SaveConfig() end -- 💾 SAUVEGARDE ICI
+        if frontTog then frontTog.Update(false, true) end
+    elseif _G.TP_Mode == "Side" then
+        sideTog.Update(true, true)
+    end
+end)
+
 CreateSectionHeader(pAuto, "SETTINGS")
 
 CreateiOSToggle(pAuto, "Enable TP Priority", Config.StealPriority or false, function(val)
@@ -3285,6 +3458,11 @@ updateLoadVisibility(Config.TpSettings.TpOnLoad)
 CreateiOSToggle(pAuto, "Auto TP back to pet", Config.AutoTpOnFailedSteal or false, function(val) 
     Config.AutoTpOnFailedSteal = val
     SaveConfig() 
+end)
+
+CreateiOSToggle(pAuto, "Enable TP Priority", Config.TpPriority, function(val)
+    Config.TpPriority = val
+    SaveConfig() -- AJOUTE JUSTE CETTE LIGNE ICI !
 end)
 
 CreateSectionHeader(pEsp, "ESP SETTINGS")
@@ -3452,7 +3630,7 @@ uLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 uLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 uLayout.Padding = UDim.new(0, 10)
 
--- Fonction de tri intelligente (Bully Hub Logic)
+-- Fonction de tri intelligente (Logic)
 local function getSortedUnlockItems(plotName)
     local plots = Workspace:FindFirstChild("Plots")
     if not plots then return {} end
@@ -5110,6 +5288,31 @@ task.spawn(function()
                 local networkGui = CoreGui:FindFirstChild("RobloxNetworkPauseNotification")
                 if networkGui then networkGui:Destroy() end
             end)
+        end
+    end
+end)
+
+-- =========================================================
+-- 🛠️ FIX : FORCE LE RÉVEIL DU STEAL (PRIORITY/HIGHEST) AU LANCEMENT
+-- =========================================================
+task.spawn(function()
+    task.wait(2) -- On attend que le menu UI soit 100% chargé
+    
+    if SharedState and SharedState.SetStealMode then
+        -- Si Priority est censé être par défaut, on force le script à cliquer dessus "virtuellement"
+        if Config.DefaultToPriority or Config.StealPriority then
+            SharedState.SetStealMode("priority")
+            SharedState.SetStealMode("priority") -- Double hit pour le forcer ON
+            
+        -- Pareil pour Highest
+        elseif Config.DefaultToHighest or Config.StealHighest then
+            SharedState.SetStealMode("highest")
+            SharedState.SetStealMode("highest")
+            
+        -- Pareil pour Nearest
+        elseif Config.DefaultToNearest or Config.StealNearest then
+            SharedState.SetStealMode("nearest")
+            SharedState.SetStealMode("nearest")
         end
     end
 end)
